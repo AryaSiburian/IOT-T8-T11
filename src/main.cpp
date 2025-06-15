@@ -1,74 +1,136 @@
 #include <main.h>
 
+
 void setup() {
-  // tulis setup kode mu di sini, untuk dijalankan sekali saja:
-  urusanLED.setWarna(100, 0, 0);
-  
-  Wire.begin();
-  Serial.begin(SERIAL_BAUD_RATE);
-  i2cScanner();
-  
-  oled.mulai();
-  oled.bersihkan();
-  
-  cetakIdentitasDeveloper(); 
+  // tulis setup kode mu di sini, untuk dijalankan sekali saja:  
+  Serial.begin(115200);
+  cetakIdentitasDeveloper();
+
 
   urusanWiFi.konek();
   while(urusanWiFi.apakahKonek() == 0){
     Serial.print(".");
-    delay(1000);
+    buzzer.beep(1000, 1);
   }
-  urusanLED.setWarna(0, 100, 0);
-  buzzer.beep(50, 3); 
-  buzzer.beep(100, 2);
+  buzzer.beep(50, 6);
+
+
+  urusanIoT.konek();
+  urusanIoT.penangkapPesan(penangkapPesan);
+
+
+  if(urusanIoT.apakahKonek() == 1){
+    subscribe();
+  }
+
+
+
+
+  kontrolBlower(true, 40, true); // Nyalakan blower
+  delay(3000);
+  kontrolBlower(false, 0, true); // Matikan blower
 }
+
 
 void loop() {
   // tulis kode utama mu di sini, untuk dijalankan berulang-ulang :
-  
+  buzzer.update();
+  urusanIoT.proses();
+
+
+  if(urusanIoT.apakahKonek() == 0){
+    Serial.println("UrusanIoT: Koneksi terputus, mencoba untuk menyambung kembali...");
+    urusanIoT.konek();
+    if(urusanIoT.apakahKonek() == 1){
+      subscribe();
+    }
+  }
+
+ if(millis() - lastSent > 1000 || flagUpdate){
+    lastSent = millis();
+    String payload;
+
+    JsonDocument doc;
+    doc["state"] = lastState;
+    doc["speed"] = lastSpeed;
+    doc["direction"] = lastDirection;
+    serializeJson(doc, payload);
+
+
+    urusanIoT.publish("northkorearooster/gadadar/status", payload);
+    flagUpdate = false;
+  }
+
+  delay(10);
 }
+
+
+void subscribe() {
+  urusanIoT.subscribe("northkorearooster/gadadar/command");
+}
+
+void penangkapPesan(String topic, String message){
+  Serial.printf("penangkapPesan: topic: %s | message: %s\r\n", topic.c_str(), message.c_str());
+  JsonDocument dataMasuk;
+  DeserializationError galatParseJson = deserializeJson(dataMasuk, message);
+  if(galatParseJson == DeserializationError::Ok){
+    if(!dataMasuk["state"].isNull() && !dataMasuk["speed"].isNull() && !dataMasuk["direction"].isNull()){
+      lastState = dataMasuk["state"].as<bool>();
+      lastSpeed = dataMasuk["speed"].as<uint8_t>();
+      // Periksa apakah direction adalah boolean atau integer
+      lastDirection = dataMasuk["direction"].as<bool>();
+      kontrolBlower(lastState, lastSpeed, lastDirection);
+    }
+  }else
+  {
+    Serial.printf("penangkapPesan: Gagal parse JSON: %s\r\n", galatParseJson.c_str());
+  }
+}
+
+
+/**
+ * @brief Mengontrol blower/fan dengan ON/OFF, kecepatan, dan arah menggunakan PWM ESP32.
+ * @param state true = ON, false = OFF
+ * @param speed nilai PWM (0-255)
+ * @param direction true = maju, false = mundur
+ */
+void kontrolBlower(bool state, uint8_t speed, bool direction) {
+    const uint8_t channelINA = 1;
+    const uint8_t channelINB = 0;
+    const uint16_t freq = 5000;
+    const uint8_t resolution = 8;
+
+
+    static bool initialized = false;
+    if (!initialized) {
+        ledcAttachPin(pinINA, channelINA);
+        ledcAttachPin(pinINB, channelINB);
+        ledcSetup(channelINA, freq, resolution);
+        ledcSetup(channelINB, freq, resolution);
+        initialized = true;
+    }
+
+
+    if (!state) {
+        ledcWrite(channelINA, 0);
+        ledcWrite(channelINB, 0);
+        return;
+    }
+    if (direction) {
+        ledcWrite(channelINA, speed);
+        ledcWrite(channelINB, 0);
+    } else {
+        ledcWrite(channelINA, 0);
+        ledcWrite(channelINB, speed);
+    }
+    Serial.printf("kontrolBlower: state=%d, speed=%d, direction=%d\r\n", state, speed, direction);
+}
+
 
 // tulis definisi fungsi mu di sini:
 void cetakIdentitasDeveloper() {
-  oled.tambahTeks(0, 0, "%d", NIM);  
-  oled.tampilkan();
-  oled.tambahTeks(0, 10, "%s", NAMA_LENGKAP);
-  oled.tampilkan();
-  oled.tambahTeks(0, 20, "%s", NAMA_KELOMPOK);
-  oled.tampilkan();
-  oled.tambahTeks(0, 30, "%s %s", CURRENT_FIRMWARE_TITLE, CURRENT_FIRMWARE_VERSION);
-  oled.tampilkan();
-}
-
-void i2cScanner() {
-  byte error, address;
-  int nDevices;
-
-  Serial.println("Scanning...");
-
-  nDevices = 0;
-  for(address = 1; address < 127; address++ ) {
-    Wire.beginTransmission(address);
-    error = Wire.endTransmission();
-    if (error == 0) {
-      Serial.print("I2C device found at address 0x");
-      if (address < 16) {
-        Serial.print("0");
-      }
-      Serial.print(address, HEX);
-      Serial.println(" !");
-      nDevices++;
-    } else if (error == 4) {
-      Serial.print("Unknow error at address 0x");
-      if (address < 16) {
-        Serial.print("0");
-      }
-      Serial.println(address, HEX);
-    }
-  }
-  if (nDevices == 0) {
-    Serial.println("No I2C devices found\n");
-  } else {
-    Serial.println("done\n");
-  }
+  Serial.printf("42330022: %d\r\n", NIM);  
+  Serial.printf("Arya Prodigy Siburian: %s\r\n", NAMA_LENGKAP);
+  Serial.printf("NorthKoreaRooster: %s\r\n", NAMA_KELOMPOK);
+  Serial.printf("Firmware: %s %s\r\n", CURRENT_FIRMWARE_TITLE, CURRENT_FIRMWARE_VERSION);
 }
